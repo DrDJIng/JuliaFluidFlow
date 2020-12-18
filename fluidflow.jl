@@ -3,11 +3,6 @@ using Plots
 # plotly()
 
 function add_source(N, x, s, dt)
-    # for i = 1:N+2
-    #     for j = 1:N+2
-    #         x[i, j] += dt * s[i, j] # Add source (done manually, maybe we can make it interactive?)
-    #     end
-    # end
     x += dt.*s
     return x
 end
@@ -132,7 +127,7 @@ function project(N, u, v, p, div, pb)
     p[:, :] = set_bnd(N, 0, p, pb)
 
     # Iterate to converge to best approximation
-    for k = 1:20
+    for k = 1:40
         for i = 2:N+1
             for j = 2:N+1
                 p[i, j] = (div[i, j] + p[i-1, j] + p[i+1, j] + p[i, j-1] + p[i, j+1])/4
@@ -239,9 +234,9 @@ anim = @animate for tc = 1:tsteps
 
     u[:, :], v[:, :] = vel_step(N, u, u_prev, v, v_prev, visc, dt, pb)
     dens[:, :] = dens_step(N, dens, dens_prev, u, v, diff, dt, pb)
-    p1 = heatmap(1:xSize, 1:ySize, dens, clim = (0, 4), aspect_ratio=:equal)
-    p2 = heatmap(1:xSize, 1:ySize, u, clim = (-3, 3), aspect_ratio=:equal)
-    p3 = heatmap(1:xSize, 1:ySize, v, clim = (-3, 3), aspect_ratio=:equal)
+    p1 = heatmap(1:xSize, 1:ySize, dens, clim = (0, 4), aspect_ratio=:equal, title = "Density")
+    p2 = heatmap(1:xSize, 1:ySize, u, clim = (-3, 3), aspect_ratio=:equal, title = "U-velocity")
+    p3 = heatmap(1:xSize, 1:ySize, v, clim = (-3, 3), aspect_ratio=:equal, title = "V-velocity")
     plot(p1, p2, p3, Layout = (1, 3))
     u_prev[:, :] = u[:, :]
     v_prev[:, :] = v[:, :]
