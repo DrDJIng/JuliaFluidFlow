@@ -233,6 +233,7 @@ k = 200
 tsteps = 200
 # for tc = 1:tsteps
 anim = @animate for tc in 1:tsteps
+    global dens_prev, u_prev, v_prev
     dens_prev[26, 26] = 1000
 
     u_prev[:, 26] .= cos(2 * pi * tc / k) * emiss
