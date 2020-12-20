@@ -85,7 +85,7 @@ function constrain(x, y, config::Grid{false})
     if x < 1.5
         x = 1.5
     elseif x > config.N + 1.5
-        x = N + 1.5
+        x = config.N + 1.5
     end
     if y < 1.5
         y = 1.5
