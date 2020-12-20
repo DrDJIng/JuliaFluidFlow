@@ -2,11 +2,15 @@ using LinearAlgebra
 using Plots
 # plotly()
 
-function swap!(a, b)
-    tmp = copy(a)
-    a = b
-    b = tmp
-    return nothing
+mutable struct Grid{P}
+    N::Int
+    visc::Float64
+    diff::Float64
+    dt::Float64
+end
+
+function Grid(N::Int, periodic::Bool, visc::Float64, diff::Float64, dt::Float64)
+    return Grid{periodic}(N, visc, diff, dt)
 end
 
 function diffuse!(x, x0, b, config::Grid)
@@ -41,7 +45,9 @@ function advect!(d, d0, u, v, b, config::Grid)
             x = i - dt0 * u[i, j]
             y = j - dt0 * v[i, j]
             # Enforce lower and upper bounds to constrain to grid
-            i0, i1 = constrain!(x, y, config)
+            x, y = constrain(x, y, config)
+            i0 = floor(Int, x) # Take the integer part
+            i1 = i0 + 1
             j0 = floor(Int, y)
             j1 = j0 + 1
 
@@ -60,7 +66,7 @@ function advect!(d, d0, u, v, b, config::Grid)
     return nothing
 end
 
-function constrain!(x, y, config::Grid{true})
+function constrain(x, y, config::Grid{true})
     if x < 1.5
         x = config.N + 1.5
     elseif x > config.N + 1.5
@@ -74,56 +80,52 @@ function constrain!(x, y, config::Grid{true})
         y = 1.5
     end
 
-    return i0, i1
+    return x, y
 end
 
-function constrain!(x, y, config::Grid{false})
+function constrain(x, y, config::Grid{false})
     if x < 1.5
         x = 1.5
     elseif x > config.N + 1.5
         x = N + 1.5
     end
-    i0 = floor(Int, x) # Take the integer part
-    i1 = i0 + 1
     if y < 1.5
         y = 1.5
     elseif y > config.N + 1.5
         y = config.N + 1.5
     end
 
-    return i0, i1
+    return x, y
 end
 
 function dens_step!(x, x0, u, v, config::Grid)
-    x += config.dt .* x0
-    swap!(x0, x) # Swap the names so that x becomes the original, and x0 becomes a guess
-    # Rather than swapping and swapping back here, wouldn't it be better to just swap
-    # inputs? so rather than x, x0; pass x0, x?
+    x .+= config.dt .* x0
+    x0, x = x, x0
     diffuse!(x, x0, 0, config)
-    swap!(x0, x)
-    #advect!(x, x0, u, v, 0, config)
+    x0, x = x, x0
+    advect!(x, x0, u, v, 0, config)
     return nothing
 end
 
 function vel_step!(u, u0, v, v0, config::Grid)
-    u += config.dt .* u0
-    swap!(u0, u)
+    u .+= config.dt .* u0
+    u0, u = u, u0
     diffuse!(u, u0, 1, config)
-    v += config.dt .* v0
-    swap!(v0, v)
+    v .+= config.dt .* v0
+    v0, v = v, v0
     diffuse!(v, v0, 2, config)
     project!(u, v, config)
-    swap!(u0, u)
-    swap!(v0, v)
-    #advect!(u, u0, u0, v0, 1, config)
-    #advect!(v, v0, u0, v0, 2, config)
+    u0, u = u, u0
+    v0, v = v, v0
+    advect!(u, u0, u0, v0, 1, config)
+    advect!(v, v0, u0, v0, 2, config)
     project!(u, v, config)
     return nothing
 end
 
 function project!(u, v, config::Grid)
-    p = similar(u)
-    div = similar(u)
+    p = zeros(size(u))
+    div = zeros(size(u))
     h = 1.0 / config.N
     # Calculate divergence using simple gradient
     for i in 2:config.N+1
@@ -214,17 +216,6 @@ function set_bnd!(x, b, config::Grid{true})
     return nothing
 end
 
-mutable struct Grid{P}
-    N::Int
-    visc::Float64
-    diff::Float64
-    dt::Float64
-end
-
-function Grid(N::Int, periodic::Bool, visc::Float64, diff::Float64, dt::Float64)
-    return Grid{periodic}(N, visc, diff, dt)
-end
-
 config = Grid(51, true, 0.01, 0.01, 0.01)
 ##
 xSize = config.N + 2
@@ -238,7 +229,6 @@ u_prev = zeros(xSize, ySize)
 v_prev = zeros(xSize, ySize)
 dens_prev = zeros(xSize, ySize)
 
-tc = 1.0 #ARB
 emiss = 100
 k = 200
 
@@ -252,6 +242,7 @@ anim = @animate for tc in 1:tsteps
 
     vel_step!(u, u_prev, v, v_prev, config)
     dens_step!(dens, dens_prev, u, v, config)
+    l = @layout [a; b c]
     p1 = heatmap(
         1:xSize,
         1:ySize,
@@ -265,6 +256,7 @@ anim = @animate for tc in 1:tsteps
         1:ySize,
         u,
         clim = (-3, 3),
+        #cbar = false,
         aspect_ratio = :equal,
         title = "U-velocity",
     )
@@ -276,10 +268,10 @@ anim = @animate for tc in 1:tsteps
         aspect_ratio = :equal,
         title = "V-velocity",
     )
-    plot(p1, p2, p3, Layout = (1, 3))
-    u_prev = u
-    v_prev = v
-    dens_prev = dens
+    plot(p1, p2, p3, layout = (1, 3), size = (1500, 500))
+    u_prev = copy(u)
+    v_prev = copy(v)
+    dens_prev = copy(dens)
 end
 
 gif(anim, "dens.gif", fps = 25)
