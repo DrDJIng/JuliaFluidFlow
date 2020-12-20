@@ -72,8 +72,6 @@ function constrain(x, y, config::Grid{true})
     elseif x > config.N + 1.5
         x = 1.5
     end
-    i0 = floor(Int, x) # Take the integer part
-    i1 = i0 + 1
     if y < 1.5
         y = config.N + 1.5
     elseif y > config.N + 1.5
