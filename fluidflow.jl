@@ -2,6 +2,8 @@ using LinearAlgebra
 using Plots
 # plotly()
 
+meshgrid(x, y) = (repeat(x, outer=length(y)), repeat(y, inner=length(x)))
+
 mutable struct Grid{P}
     N::Int
     visc::Float64
@@ -13,13 +15,15 @@ function Grid(N::Int, periodic::Bool, visc::Float64, diff::Float64, dt::Float64)
     return Grid{periodic}(N, visc, diff, dt)
 end
 
-function diffuse!(x, x0, b, config::Grid)
+function diffuse!(x, x0, b, diff_rate, config::Grid)
     # a is just a convergence factor
-    a = config.dt * config.diff * config.N * config.N
+    a = config.dt * diff_rate * config.N * config.N
     h = 1
-
+    err = 1e5
+    tol = 1e-12
     # Update to use dynamic error checker, instead of static # of iterations
-    for k in 1:20
+    while err > tol
+        old_x = copy(x)
         for i in 2:config.N+1
             for j in 2:config.N+1
                 # Gauss-seidel method, main-diagonal dominant (sum of off-diagonal terms needs to be less than diagonal)
@@ -33,6 +37,7 @@ function diffuse!(x, x0, b, config::Grid)
             end
         end
         set_bnd!(x, b, config)
+        err = abs(sum(x .- old_x))
     end
     return nothing
 end
@@ -51,14 +56,25 @@ function advect!(d, d0, u, v, b, config::Grid)
             j0 = floor(Int, y)
             j1 = j0 + 1
 
+            # Take the fractional part, and use to weight contribution over nearest neighbour squares
             s1 = x - i0
             s0 = 1 - s1
             t1 = y - j0
             t0 = 1 - t1
 
+            if i0 == 34 || i1 == 34
+                print("Whoops!")
+            end
+
             d[i, j] =
+                (
                 s0 * (t0 * d0[i0, j0] + t1 * d0[i0, j1]) +
                 s1 * (t0 * d0[i1, j0] + t1 * d0[i1, j1])
+                ) * 0.99
+
+            if (s0*t0 + s0*t1 + s1*t0 + s1*t1) > 1.0
+                print("Divergence encountered!")
+            end
 
         end
     end
@@ -67,15 +83,19 @@ function advect!(d, d0, u, v, b, config::Grid)
 end
 
 function constrain(x, y, config::Grid{true})
-    if x < 1.5
-        x = config.N + 1.5
-    elseif x > config.N + 1.5
-        x = 1.5
+    while x < 1.5 || x > config.N + 1.5
+        if x < 1.5
+            x = config.N + 1.5 - abs(x)
+        elseif x > config.N + 1.5
+            x = x - config.N
+        end
     end
-    if y < 1.5
-        y = config.N + 1.5
-    elseif y > config.N + 1.5
-        y = 1.5
+    while y < 1.5 || y > config.N + 1.5
+        if y < 1.5
+            y = config.N + 1.5 - abs(y)
+        elseif y > config.N + 1.5
+            y = y - config.N
+        end
     end
 
     return x, y
@@ -84,13 +104,13 @@ end
 function constrain(x, y, config::Grid{false})
     if x < 1.5
         x = 1.5
-    elseif x > config.N + 1.5
-        x = config.N + 1.5
+    elseif x > config.N + 0.5
+        x = config.N + 0.5
     end
     if y < 1.5
         y = 1.5
-    elseif y > config.N + 1.5
-        y = config.N + 1.5
+    elseif y > config.N + 0.5
+        y = config.N + 0.5
     end
 
     return x, y
@@ -99,7 +119,7 @@ end
 function dens_step!(x, x0, u, v, config::Grid)
     x .+= config.dt .* x0
     x0, x = x, x0
-    diffuse!(x, x0, 0, config)
+    diffuse!(x, x0, 0, config.diff, config)
     x0, x = x, x0
     advect!(x, x0, u, v, 0, config)
     return nothing
@@ -108,10 +128,10 @@ end
 function vel_step!(u, u0, v, v0, config::Grid)
     u .+= config.dt .* u0
     u0, u = u, u0
-    diffuse!(u, u0, 1, config)
+    diffuse!(u, u0, 1, config.visc, config)
     v .+= config.dt .* v0
     v0, v = v, v0
-    diffuse!(v, v0, 2, config)
+    diffuse!(v, v0, 2, config.visc, config)
     project!(u, v, config)
     u0, u = u, u0
     v0, v = v, v0
@@ -134,16 +154,22 @@ function project!(u, v, config::Grid)
 
     set_bnd!(div, 0, config)
     set_bnd!(p, 0, config)
-
-    # Iterate to converge to best approximation
-    for k in 1:40
+    # Update to use dynamic error checker, instead of static # of iterations
+    for k in 1:20
         for i in 2:config.N+1
             for j in 2:config.N+1
-                p[i, j] = (div[i, j] + p[i-1, j] + p[i+1, j] + p[i, j-1] + p[i, j+1]) / 4
+                # Gauss-seidel method, main-diagonal dominant (sum of off-diagonal terms needs to be less than diagonal)
+                # p[i, j] = (div[i, j] + p[i-1, j] + p[i+1, j] + p[i, j-1] + p[i, j+1]) / 4
+                p[i, j] = (
+                        div[i, j] +
+                        0.50  * (p[i+1, j] + p[i-1, j] + p[i, j+1] + p[i, j-1]) +
+                        0.25  * (p[i+1, j+1] + p[i-1, j+1] + p[i+1, j-1] + p[i-1, j-1])
+                    ) / 3
             end
         end
         set_bnd!(p, 0, config)
     end
+
 
     # Subtract off converged divergence from velocity fields to obtain mass-conserving curl
     for i in 2:config.N+1
@@ -187,37 +213,30 @@ end
 function set_bnd!(x, b, config::Grid{true})
     N = config.N
     for i in 2:N+1
-        if b == 1 # Do top and bottom walls
-            x[1, i] = (x[N+1, i] + x[2, i]) / 2
-            x[N+2, i] = (x[N+1, i] + x[2, i]) / 2
-        else
-            x[1, i] = x[2, i]
-            x[N+2, i] = x[N+1, i]
-        end
-        if b == 2 # Do left and right walls
-            x[i, 1] = (x[i, 2] + x[i, N+1]) / 2
-            x[i, N+2] = (x[i, 2] + x[i, N+1]) / 2
-        else
-            x[i, 1] = x[i, 2]
-            x[i, N+2] = x[i, N+1]
-        end
 
+        x[i, 1] = (x[i, 2] + x[i, N+1]) / 2
+        x[i, N+2] = (x[i, 2] + x[i, N+1]) / 2
+        x[1, i] = (x[N+1, i] + x[2, i]) / 2
+        x[N+2, i] = (x[N+1, i] + x[2, i]) / 2
         # Do the corner pieces.
-        for i in 1:5
-            x[1, 1] = 0.25 * (x[2, 1] + x[1, 2] + x[1, N+2] + x[N+2, 1])
-            x[1, N+2] = 0.25 * (x[2, N+2] + x[1, N+1] + x[1, 1] + x[N+2, N+2])
-            x[N+2, 1] = 0.25 * (x[N+1, 1] + x[N+2, 2] + x[1, 1] + x[N+2, N+2])
-            x[N+2, N+2] = 0.25 * (x[N+1, N+2] + x[N+2, N+1] + x[1, N+2] + x[N+2, 1])
-        end
+        x[1, 1] = 0.25 * (x[2, 1] + x[1, 2] + x[1, N+2] + x[N+2, 1])
+        x[1, N+2] = 0.25 * (x[2, N+2] + x[1, N+1] + x[1, 1] + x[N+2, N+2])
+        x[N+2, 1] = 0.25 * (x[N+1, 1] + x[N+2, 2] + x[1, 1] + x[N+2, N+2])
+        x[N+2, N+2] = 0.25 * (x[N+1, N+2] + x[N+2, N+1] + x[1, N+2] + x[N+2, 1])
     end
 
     return nothing
 end
+##
+# N, periodic boundaries, diffusion, viscocity, dt
+config = Grid(31, true, 0.01, 0.01, 0.01)
 
-config = Grid(51, true, 0.01, 0.01, 0.01)
+
 ##
 xSize = config.N + 2
 ySize = config.N + 2
+
+x, y = meshgrid(1:xSize, 1:ySize)
 
 u = zeros(xSize, ySize)
 v = zeros(xSize, ySize)
@@ -226,18 +245,29 @@ dens = zeros(xSize, ySize)
 u_prev = zeros(xSize, ySize)
 v_prev = zeros(xSize, ySize)
 dens_prev = zeros(xSize, ySize)
+dens_prev[15:17, 15:17] .= 100
 
-emiss = 100
+for ic in 1:xSize
+    xx = ic
+    for jc in 1:ySize
+        yy = jc
+        u_prev[ic, jc] = (yy-15)*(xx-15)^2 + (yy-15)^2
+        v_prev[ic, jc] = -(xx-15)^3 + (yy-15)^2
+        # v_prev[ic, jc] = 1
+    end
+end
+u_prev .*= 0.5
+v_prev .*= 0.5
+
+emiss = 1
 k = 200
 
-tsteps = 200
+tsteps = 500
 # for tc = 1:tsteps
 anim = @animate for tc in 1:tsteps
     global dens_prev, u_prev, v_prev
-    dens_prev[26, 26] = 1000
-
-    u_prev[:, 26] .= cos(2 * pi * tc / k) * emiss
-    v_prev[26, :] .= cos(2 * pi * tc / k) * emiss
+    # u_prev[:, 11] .= cos(2 * pi * tc / k) * emiss
+    # v_prev[11, :] .= sin(2 * pi * tc / k) * emiss
 
     vel_step!(u, u_prev, v, v_prev, config)
     dens_step!(dens, dens_prev, u, v, config)
@@ -246,28 +276,37 @@ anim = @animate for tc in 1:tsteps
         1:xSize,
         1:ySize,
         dens,
-        clim = (0, 4),
+        clim = (0, 0.1),
         aspect_ratio = :equal,
         title = "Density",
     )
-    p2 = heatmap(
-        1:xSize,
-        1:ySize,
-        u,
-        clim = (-3, 3),
-        #cbar = false,
-        aspect_ratio = :equal,
-        title = "U-velocity",
+    # p2 = heatmap(
+    #     1:xSize,
+    #     1:ySize,
+    #     u,
+    #     clim = (-4, 4),
+    #     #cbar = false,
+    #     aspect_ratio = :equal,
+    #     title = "U-velocity",
+    # )
+    # p3 = heatmap(
+    #     1:xSize,
+    #     1:ySize,
+    #     v,
+    #     clim = (-4, 4),
+    #     aspect_ratio = :equal,
+    #     title = "V-velocity",
+    # )
+    p4 = quiver(
+    x,
+    y,
+    quiver = (reshape(u, (1, xSize^2)), reshape(v, (1, ySize^2))), # Be careful here to take into account how arrays work vs how heatmaps are plotted.
+    aspect_ratio = :equal,
+    title = "Velocity field",
+    arrow = arrow(0.01, 0.01)
     )
-    p3 = heatmap(
-        1:xSize,
-        1:ySize,
-        v,
-        clim = (-3, 3),
-        aspect_ratio = :equal,
-        title = "V-velocity",
-    )
-    plot(p1, p2, p3, layout = (1, 3), size = (1500, 500))
+
+    plot(p1, p4, layout = (1, 2), size = (1000, 500))
     u_prev = copy(u)
     v_prev = copy(v)
     dens_prev = copy(dens)
