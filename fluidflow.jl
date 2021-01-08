@@ -21,13 +21,16 @@ function diffuse!(x, x0, b, diff_rate, config::Grid)
     h = 1
     err = 1e5
     tol = 1e-12
-    # Update to use dynamic error checker, instead of static # of iterations
+    # Updated to use dynamic error checker, instead of static # of iterations. Probably not super important.
     while err > tol
         old_x = copy(x)
         for i in 2:config.N+1
             for j in 2:config.N+1
                 # Gauss-seidel method, main-diagonal dominant (sum of off-diagonal terms needs to be less than diagonal)
                 # x[i, j] = (x0[i, j] + a * (x[i-1, j] + x[i+1, j] + x[i, j-1] + x[i, j+1]))/(1+4*a)
+
+                # This method comes from Jesse, who knows a lot more about stencils than I do. It's a nearest neighbour including diagonals stencil.
+                # He tells me this will spread out the error a bit more, which is good.
                 x[i, j] =
                     (
                         x0[i, j] +
@@ -57,24 +60,18 @@ function advect!(d, d0, u, v, b, config::Grid)
             j1 = j0 + 1
 
             # Take the fractional part, and use to weight contribution over nearest neighbour squares
-            s1 = x - i0
+            s1 = x % 1
             s0 = 1 - s1
-            t1 = y - j0
+            t1 = y % 1
             t0 = 1 - t1
 
-            if i0 == 34 || i1 == 34
-                print("Whoops!")
-            end
-
+            # Interpolate where current density resides. Multiplied by 0.99 to ensure convergence.
+            # Don't know why it diverges if set to 1. ¯\_(ツ)_/¯
             d[i, j] =
                 (
                 s0 * (t0 * d0[i0, j0] + t1 * d0[i0, j1]) +
                 s1 * (t0 * d0[i1, j0] + t1 * d0[i1, j1])
                 ) * 0.99
-
-            if (s0*t0 + s0*t1 + s1*t0 + s1*t1) > 1.0
-                print("Divergence encountered!")
-            end
 
         end
     end
@@ -83,6 +80,8 @@ function advect!(d, d0, u, v, b, config::Grid)
 end
 
 function constrain(x, y, config::Grid{true})
+    # For use with periodic boundary conditions.
+    # In a while loop, to account for extreme velocities that might be several grids away.
     while x < 1.5 || x > config.N + 1.5
         if x < 1.5
             x = config.N + 1.5 - abs(x)
@@ -102,6 +101,8 @@ function constrain(x, y, config::Grid{true})
 end
 
 function constrain(x, y, config::Grid{false})
+    # For use with non-periodic boundaries. If fluid would move past the boundary, set to the boundary.
+    # Should update to include a boolean-mask, so that obstructions can be included.
     if x < 1.5
         x = 1.5
     elseif x > config.N + 0.5
@@ -117,8 +118,8 @@ function constrain(x, y, config::Grid{false})
 end
 
 function dens_step!(x, x0, u, v, config::Grid)
-    x .+= config.dt .* x0
-    x0, x = x, x0
+    x .+= config.dt .* x0 # Take distance difference over a single time step.
+    x0, x = x, x0 # Flip names of variables. x0 is overwritten by guesses anyway, so it doesn't matter.
     diffuse!(x, x0, 0, config.diff, config)
     x0, x = x, x0
     advect!(x, x0, u, v, 0, config)
@@ -126,8 +127,8 @@ function dens_step!(x, x0, u, v, config::Grid)
 end
 
 function vel_step!(u, u0, v, v0, config::Grid)
-    u .+= config.dt .* u0
-    u0, u = u, u0
+    u .+= config.dt .* u0 # Take velocity difference over a single time step.
+    u0, u = u, u0 # Flip names of variables.
     diffuse!(u, u0, 1, config.visc, config)
     v .+= config.dt .* v0
     v0, v = v, v0
@@ -142,9 +143,10 @@ function vel_step!(u, u0, v, v0, config::Grid)
 end
 
 function project!(u, v, config::Grid)
-    p = zeros(size(u))
-    div = zeros(size(u))
-    h = 1.0 / config.N
+    p = zeros(size(u)) # Was passed into function in original code from paper, not necessary to on modern computers.
+    div = zeros(size(u)) # Instantiate divergence matrix.
+    h = 1.0 / config.N # Step size. This is actually cancelled out later on, so I'm not entirely sure why it exists.
+
     # Calculate divergence using simple gradient
     for i in 2:config.N+1
         for j in 2:config.N+1
@@ -154,12 +156,15 @@ function project!(u, v, config::Grid)
 
     set_bnd!(div, 0, config)
     set_bnd!(p, 0, config)
-    # Update to use dynamic error checker, instead of static # of iterations
+
+    # Tried to use dynamic error here, but it never converged. Static # of steps is the way to go.
     for k in 1:20
         for i in 2:config.N+1
             for j in 2:config.N+1
-                # Gauss-seidel method, main-diagonal dominant (sum of off-diagonal terms needs to be less than diagonal)
+                # Gauss-seidel method, from the paper.
                 # p[i, j] = (div[i, j] + p[i-1, j] + p[i+1, j] + p[i, j-1] + p[i, j+1]) / 4
+
+                # Jesse's stencil, modified to match above method.
                 p[i, j] = (
                         div[i, j] +
                         0.50  * (p[i+1, j] + p[i-1, j] + p[i, j+1] + p[i, j-1]) +
@@ -171,7 +176,7 @@ function project!(u, v, config::Grid)
     end
 
 
-    # Subtract off converged divergence from velocity fields to obtain mass-conserving curl
+    # Subtract off converged calculated divergence from velocity fields to obtain mass-conserving curl. Also introduces pretty swirlies.
     for i in 2:config.N+1
         for j in 2:config.N+1
             u[i, j] -= 0.5 * (p[i+1, j] - p[i-1, j]) / h
@@ -184,6 +189,7 @@ function project!(u, v, config::Grid)
 end
 
 function set_bnd!(x, b, config::Grid{false})
+    # Non-periodic boundary conditions.
     N = config.N
     for i in 2:N+1
         if b == 1 # Do left and right walls
@@ -211,14 +217,18 @@ function set_bnd!(x, b, config::Grid{false})
 end
 
 function set_bnd!(x, b, config::Grid{true})
+    # Periodic boundary conditions.
     N = config.N
     for i in 2:N+1
 
+        # Make sure to do the edges correctly, or fluid will only flow from the corner pieces that update, then act as a density source. Not ideal, or correct.
+        # Making these the same regardless of whether the velocity is horizontal or vertical. Seems to work.
         x[i, 1] = (x[i, 2] + x[i, N+1]) / 2
         x[i, N+2] = (x[i, 2] + x[i, N+1]) / 2
         x[1, i] = (x[N+1, i] + x[2, i]) / 2
         x[N+2, i] = (x[N+1, i] + x[2, i]) / 2
-        # Do the corner pieces.
+
+        # Do the corner pieces. I wasn't entirely sure what to do here, so these are just the averages of all four corner pieces.
         x[1, 1] = 0.25 * (x[2, 1] + x[1, 2] + x[1, N+2] + x[N+2, 1])
         x[1, N+2] = 0.25 * (x[2, N+2] + x[1, N+1] + x[1, 1] + x[N+2, N+2])
         x[N+2, 1] = 0.25 * (x[N+1, 1] + x[N+2, 2] + x[1, 1] + x[N+2, N+2])
@@ -229,57 +239,67 @@ function set_bnd!(x, b, config::Grid{true})
 end
 ##
 # N, periodic boundaries, diffusion, viscocity, dt
-config = Grid(31, true, 0.01, 0.01, 0.01)
+config = Grid(51, false, 0.01, 0.01, 0.01)
 
 
 ##
 xSize = config.N + 2
 ySize = config.N + 2
 
-x, y = meshgrid(1:xSize, 1:ySize)
+x, y = meshgrid(1:xSize, 1:ySize) # Purely for plotting.
 
-u = zeros(xSize, ySize)
-v = zeros(xSize, ySize)
-dens = zeros(xSize, ySize)
-
+# Instantiate velocity components.
+u = zeros(xSize, ySize) # Horizontal velocity
+v = zeros(xSize, ySize) # Vertical velocity.
 u_prev = zeros(xSize, ySize)
 v_prev = zeros(xSize, ySize)
-dens_prev = zeros(xSize, ySize)
-dens_prev[15:17, 15:17] .= 100
 
-for ic in 1:xSize
+# Instantiate density component.
+dens = zeros(xSize, ySize)
+dens_prev = zeros(xSize, ySize)
+
+# Define center of grid
+center = floor(Int, config.N/2)
+
+dens_prev[center - 6 : center + 6, center - 6 : center + 6] .= 10
+
+# Define velocity gradient. Here, I'm using a circular velocity field, with a radius of 1, centered at (x, y) = (floor(N/2), floor(N/2)).
+
+for ic in center - 6:center + 6
     xx = ic
-    for jc in 1:ySize
+    for jc in center - 6:center + 6
         yy = jc
-        u_prev[ic, jc] = (yy-15)*(xx-15)^2 + (yy-15)^2
-        v_prev[ic, jc] = -(xx-15)^3 + (yy-15)^2
-        # v_prev[ic, jc] = 1
+        u_prev[ic, jc] = (yy-center)*(xx-center)^2 + (yy-center)^2
+        v_prev[ic, jc] = -(xx-center)^3 + (yy-center)^2
     end
 end
-u_prev .*= 0.5
-v_prev .*= 0.5
+# Scaling the velocity a bit. Higher values imparts a higher initial velocity.
+u_prev .*= 10
+v_prev .*= 10
 
-emiss = 1
-k = 200
+# Number of time steps
+tsteps = 100
 
-tsteps = 500
 # for tc = 1:tsteps
 anim = @animate for tc in 1:tsteps
     global dens_prev, u_prev, v_prev
-    # u_prev[:, 11] .= cos(2 * pi * tc / k) * emiss
-    # v_prev[11, :] .= sin(2 * pi * tc / k) * emiss
 
-    vel_step!(u, u_prev, v, v_prev, config)
-    dens_step!(dens, dens_prev, u, v, config)
     l = @layout [a; b c]
     p1 = heatmap(
         1:xSize,
         1:ySize,
         dens,
-        clim = (0, 0.1),
+        clim = (0, 0.2),
         aspect_ratio = :equal,
-        title = "Density",
+        # title = "Density",
+        legend = false,
+        axis = nothing,
+        border = :none,
     )
+    vel_step!(u, u_prev, v, v_prev, config)
+    dens_step!(dens, dens_prev, u, v, config)
+
+
     # p2 = heatmap(
     #     1:xSize,
     #     1:ySize,
@@ -297,16 +317,17 @@ anim = @animate for tc in 1:tsteps
     #     aspect_ratio = :equal,
     #     title = "V-velocity",
     # )
-    p4 = quiver(
-    x,
-    y,
-    quiver = (reshape(u, (1, xSize^2)), reshape(v, (1, ySize^2))), # Be careful here to take into account how arrays work vs how heatmaps are plotted.
-    aspect_ratio = :equal,
-    title = "Velocity field",
-    arrow = arrow(0.01, 0.01)
-    )
+    # p4 = quiver(
+    # x,
+    # y,
+    # quiver = (reshape(u, (1, xSize^2)), reshape(v, (1, ySize^2))), # Be careful here to take into account how arrays work vs how heatmaps are plotted.
+    # aspect_ratio = :equal,
+    # title = "Velocity field",
+    # arrow = arrow(0.01, 0.01)
+    # )
 
-    plot(p1, p4, layout = (1, 2), size = (1000, 500))
+    plot(p1, size = (500, 500))
+    # , p4, layout = (1, 2)
     u_prev = copy(u)
     v_prev = copy(v)
     dens_prev = copy(dens)
